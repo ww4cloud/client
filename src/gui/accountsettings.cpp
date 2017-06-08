@@ -620,14 +620,24 @@ void AccountSettings::slotAccountStateChanged(int state)
     /* Allow to expand the item if the account is connected. */
     ui->_folderList->setItemsExpandable(state == AccountState::Connected);
 
-    /* check if there are expanded root items, if so, close them, if the state is different from being Connected. */
     if (state != AccountState::Connected) {
+        /* check if there are expanded root items, if so, close them */
         int i;
         for (i = 0; i < _model->rowCount(); ++i) {
             if (ui->_folderList->isExpanded(_model->index(i)))
                 ui->_folderList->setExpanded(_model->index(i), false);
         }
+
+        // Pending selective sync changes get dropped
+        if (_model->isDirty()) {
+            _model->resetFolders();
+        }
     }
+
+    // Disabling expansion of folders might require hiding the selective
+    // sync user interface buttons.
+    refreshSelectiveSyncStatus();
+
     /* set the correct label for the Account toolbox button */
     if (_accountState) {
         if (_accountState->isSignedOut()) {
@@ -727,6 +737,12 @@ void AccountSettings::refreshSelectiveSyncStatus()
         ui->selectiveSyncButtons->setVisible(false);
         ui->bigFolderUi->setVisible(true);
         shouldBeVisible = true;
+    }
+
+    // If the folders *can't* be expanded, showing the selective sync ui
+    // is confusing and should not be done.
+    if (!ui->_folderList->itemsExpandable()) {
+        shouldBeVisible = false;
     }
 
     ui->selectiveSyncApply->setEnabled(_model->isDirty() || !msg.isEmpty());
