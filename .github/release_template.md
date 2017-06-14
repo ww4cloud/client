@@ -67,7 +67,7 @@ On Release Day (for final release):
 * [ ] Create tar ball (automated by `ownCloud-client-source` jenkins job) and **immediately** sign it (asc file). (https://github.com/owncloud/enterprise/wiki/Desktop-Signing-Knowledge)
 * [ ] Create build for Windows using rotor job owncloud-client-win32 (uncheck the "nightly build" checkbox, check the "sign package" checkboxes) both themes 'ownCloud' and 'testpilotcould'
 * [ ] Create build for Mac using rotor, job owncloud-client-osx (uncheck the "nightly build" checkbox, check the "sign package" checkboxes) both themes 'ownCloud' and 'testpilotcould'
-* [ ] Stop publishing on OBS
+* [ ] Stop publishing on OBS (if still enabled).
 * [ ] Branch isv:ownCloud:desktop to isv:ownCloud:desktop:client-X.Y.Z before overwriting https://github.com/owncloud/administration/blob/master/jenkins/obs_integration/obs-backup-prj.sh
 * [ ] Create Linux builds using rotor job owncloud-client-linux (this magically interacts with the ownCloud-client-source job)
   * Check if patches still apply in the linux packages
@@ -102,4 +102,9 @@ On Release Day (for final release):
 * [ ] Days later: Update the updater script ```clientupdater.php``` (check the crash reporter if auto update is a good idea or we need a new release)
 * [ ] Tell GCX to increment the minimum supported version for enterprise customers
 * [ ] Check if minimum.supported.desktop.version (https://github.com/owncloud/core/blob/master/config/config.sample.php#L1152) needs to be updated in server
+
+15 minutes after after release:
+* [ ] Test all advertised download links to have the expected version
+* [ ] Check for build errors in OBS
+* [ ] disable publishing in OBS
 ```
