@@ -517,7 +517,12 @@ int SyncEngine::treewalkFile( TREE_WALK_FILE *file, bool remote )
     if (file->etag && file->etag[0]) {
         item->_etag = file->etag;
     }
-    item->_size = file->size;
+    if (remote && item->_instruction == CSYNC_INSTRUCTION_SYNC) {
+        // Don't overwrite with remote size, keep the local one for files existing on server.
+        // This is important to pick the right chunking protocol later.
+    } else {
+        item->_size = file->size;
+    }
 
     if (!item->_inode) {
         item->_inode = file->inode;
