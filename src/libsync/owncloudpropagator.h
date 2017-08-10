@@ -210,11 +210,7 @@ public:
 
     virtual bool scheduleSelfOrChild() Q_DECL_OVERRIDE;
     virtual JobParallelism parallelism() Q_DECL_OVERRIDE;
-    virtual void abort() Q_DECL_OVERRIDE
-    {
-        foreach (PropagatorJob *j, _runningJobs)
-            j->abort();
-    }
+    virtual void abort() Q_DECL_OVERRIDE;
 
     qint64 committedDiskSpace() const Q_DECL_OVERRIDE;
 
@@ -229,6 +225,12 @@ private slots:
 
     void slotSubJobFinished(SyncFileItem::Status status);
     void finalize();
+
+signals:
+    /**
+     * Emitted when the abort is fully finished
+     */
+    void abortFinished();
 };
 
 /**
@@ -261,6 +263,9 @@ public:
     virtual JobParallelism parallelism() Q_DECL_OVERRIDE;
     virtual void abort() Q_DECL_OVERRIDE
     {
+        // Abort first job and sub jobs
+        // Finished abort will be announced via abortFinished()
+        // (look contructor implementation)
         if (_firstJob)
             _firstJob->abort();
         _subJobs.abort();
@@ -281,6 +286,12 @@ private slots:
 
     void slotFirstJobFinished(SyncFileItem::Status status);
     void slotSubJobsFinished(SyncFileItem::Status status);
+
+signals:
+    /**
+     * Emitted when the abort is fully finished
+     */
+    void abortFinished();
 };
 
 
@@ -362,6 +373,7 @@ public:
      */
     quint64 _chunkSize;
     quint64 smallFileSize();
+    quint64 jobTimeoutDuration();
 
     /* The maximum number of active jobs in parallel  */
     int hardMaximumActiveJob();
@@ -394,11 +406,13 @@ public:
     {
         _abortRequested.fetchAndStoreOrdered(true);
         if (_rootJob) {
-            // We're possibly already in an item's finished stack
+            // Invoke abort and wait for abort finish to finalize
+            connect(_rootJob.data(), SIGNAL(abortFinished()), this, SLOT(slotAbortFinished()));
             QMetaObject::invokeMethod(_rootJob.data(), "abort", Qt::QueuedConnection);
+        } else {
+            // No root job, send abort finished slot
+            slotAbortFinished();
         }
-        // abort() of all jobs will likely have already resulted in finished being emitted, but just in case.
-        QMetaObject::invokeMethod(this, "emitFinished", Qt::QueuedConnection, Q_ARG(SyncFileItem::Status, SyncFileItem::NormalError));
     }
 
     // timeout in seconds
@@ -418,6 +432,10 @@ public:
     DiskSpaceResult diskSpaceCheck() const;
 
 private slots:
+
+    void slotAbortFinished() {
+        QMetaObject::invokeMethod(this, "emitFinished", Qt::QueuedConnection, Q_ARG(SyncFileItem::Status, SyncFileItem::NormalError));
+    }
 
     /** Emit the finished signal and make sure it is only emitted once */
     void emitFinished(SyncFileItem::Status status)

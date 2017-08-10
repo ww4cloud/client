@@ -372,6 +372,8 @@ public:
 private:
     void startNewUpload();
     void startNextChunk();
+public slots:
+    void abort() Q_DECL_OVERRIDE;
 private slots:
     void slotPropfindFinished();
     void slotPropfindFinishedWithError();

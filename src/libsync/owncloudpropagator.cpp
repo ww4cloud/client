@@ -410,6 +410,12 @@ quint64 OwncloudPropagator::smallFileSize()
     return smallFileSize;
 }
 
+quint64 OwncloudPropagator::jobTimeoutDuration()
+{
+    const quint64 timeout = 5000; //default to 5000 msec,
+    return timeout;
+}
+
 void OwncloudPropagator::start(const SyncFileItemVector &items)
 {
     Q_ASSERT(std::is_sorted(items.begin(), items.end()));
@@ -734,6 +740,20 @@ PropagatorJob::JobParallelism PropagatorCompositeJob::parallelism()
     return FullParallelism;
 }
 
+void PropagatorCompositeJob::abort()
+{
+    foreach (PropagatorJob *j, _runningJobs)
+        j->abort();
+
+    if (_runningJobs.size() != 0) {
+        // Some aborted jobs might result in conflicts (owncloud/client/issues/5949)
+        // Give running jobs max jobTimeoutDuration seconds to finish on their own and finish job
+        QTimer::singleShot(propagator()->jobTimeoutDuration(), this, SIGNAL(abortFinished()));
+    } else {
+        // No running jobs, emit finish immedietaly
+        emit abortFinished();
+    }
+}
 
 bool PropagatorCompositeJob::scheduleSelfOrChild()
 {
@@ -848,6 +868,7 @@ PropagateDirectory::PropagateDirectory(OwncloudPropagator *propagator, const Syn
         connect(_firstJob.data(), SIGNAL(finished(SyncFileItem::Status)), this, SLOT(slotFirstJobFinished(SyncFileItem::Status)));
     }
     connect(&_subJobs, SIGNAL(finished(SyncFileItem::Status)), this, SLOT(slotSubJobsFinished(SyncFileItem::Status)));
+    connect(&_subJobs, SIGNAL(abortFinished()), this, SIGNAL(abortFinished()));
 }
 
 PropagatorJob::JobParallelism PropagateDirectory::parallelism()
