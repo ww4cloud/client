@@ -111,6 +111,10 @@ signals:
      */
     void finished(SyncFileItem::Status);
 
+    /**
+     * Emitted when the abort is fully finished
+     */
+    void abortFinished();
 protected:
     OwncloudPropagator *propagator() const;
 };
@@ -225,12 +229,6 @@ private slots:
 
     void slotSubJobFinished(SyncFileItem::Status status);
     void finalize();
-
-signals:
-    /**
-     * Emitted when the abort is fully finished
-     */
-    void abortFinished();
 };
 
 /**
@@ -287,11 +285,6 @@ private slots:
     void slotFirstJobFinished(SyncFileItem::Status status);
     void slotSubJobsFinished(SyncFileItem::Status status);
 
-signals:
-    /**
-     * Emitted when the abort is fully finished
-     */
-    void abortFinished();
 };
 
 

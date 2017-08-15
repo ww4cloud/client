@@ -140,6 +140,11 @@ public:
         return true;
     }
 
+    QIODevice *device()
+    {
+        return _device;
+    }
+
     QString errorString()
     {
         return _errorString.isEmpty() ? AbstractNetworkJob::errorString() : _errorString;
@@ -314,6 +319,21 @@ private:
         return propagator()->syncOptions()._initialChunkSize;
     }
 
+    bool isFinalChunk() const {
+        bool isFinalChunk = false;
+        if (_chunkCount > 1) {
+            int sendingChunk = (_currentChunk + _startChunk) % _chunkCount;
+
+            if (sendingChunk == _chunkCount - 1) { // last chunk
+                isFinalChunk = true;
+            }
+        } else {
+            // if there's only one chunk, it's the final one
+            isFinalChunk = true;
+        }
+
+        return isFinalChunk;
+    }
 
 public:
     PropagateUploadFileV1(OwncloudPropagator *propagator, const SyncFileItemPtr &item)
@@ -322,7 +342,8 @@ public:
     }
 
     void doStartUpload() Q_DECL_OVERRIDE;
-
+public slots:
+    void abort() Q_DECL_OVERRIDE;
 private slots:
     void startNextChunk();
     void slotPutFinished();
