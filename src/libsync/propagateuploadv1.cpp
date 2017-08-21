@@ -78,8 +78,7 @@ void PropagateUploadFileV1::startNextChunk()
     UploadDevice *device = new UploadDevice(&propagator()->_bandwidthManager);
     qint64 chunkStart = 0;
     qint64 currentChunkSize = fileSize;
-
-    bool isFinalChunk = PropagateUploadFileV1::isFinalChunk();
+    bool isFinalChunk = false;
     if (_chunkCount > 1) {
         int sendingChunk = (_currentChunk + _startChunk) % _chunkCount;
         // XOR with chunk size to make sure everything goes well if chunk size changes between runs
@@ -91,14 +90,17 @@ void PropagateUploadFileV1::startNextChunk()
 
         chunkStart = chunkSize() * quint64(sendingChunk);
         currentChunkSize = chunkSize();
-        if (isFinalChunk) { // last chunk
+        if (sendingChunk == _chunkCount - 1) { // last chunk
             currentChunkSize = (fileSize % chunkSize());
             if (currentChunkSize == 0) { // if the last chunk pretends to be 0, its actually the full chunk size.
                 currentChunkSize = chunkSize();
             }
+            isFinalChunk = true;
         }
+    } else {
+        // if there's only one chunk, it's the final one
+        isFinalChunk = true;
     }
-
     qCDebug(lcPropagateUpload) << _chunkCount << isFinalChunk << chunkStart << currentChunkSize;
 
     if (isFinalChunk && !_transmissionChecksumHeader.isEmpty()) {
@@ -359,20 +361,28 @@ void PropagateUploadFileV1::slotUploadProgress(qint64 sent, qint64 total)
     propagator()->reportProgress(*_item, amount);
 }
 
-void PropagateUploadFileV1::abort()
+void PropagateUploadFileV1::abort(const bool &asyncAbort)
 {
-    foreach (AbstractNetworkJob *job, _jobs) {
-        // Dont abort final PUT which uploaded its data,
-        // since this might result in conflicts
-        if (PUTFileJob *putJob = qobject_cast<PUTFileJob *>(job)){
-            if (isFinalChunk() && putJob->device()->atEnd()) {
-                continue;
-            }
-        }
+    // Prepare abort
+    prepareAbort(asyncAbort);
 
+    // Abort all jobs (if there are any left), except final PUT
+    foreach (AbstractNetworkJob *job, _jobs) {
         if (job->reply()) {
+            // If asynchronous abort allowed,
+            // dont abort final PUT which uploaded its data,
+            // since this might result in conflicts
+            if (PUTFileJob *putJob = qobject_cast<PUTFileJob *>(job)){
+                if (asyncAbort && (((_currentChunk + _startChunk) % _chunkCount) == 0)
+                        && putJob->device()->atEnd()) {
+                    continue;
+                }
+            }
+
+            // Abort the job
             job->reply()->abort();
         }
     }
 }
+
 }

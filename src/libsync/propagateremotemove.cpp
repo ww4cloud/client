@@ -117,10 +117,14 @@ void PropagateRemoteMove::start()
     _job->start();
 }
 
-void PropagateRemoteMove::abort()
+void PropagateRemoteMove::abort(const bool &asyncAbort)
 {
     if (_job && _job->reply())
         _job->reply()->abort();
+
+    if (asyncAbort) {
+        emit abortFinished();
+    }
 }
 
 void PropagateRemoteMove::slotMoveJobFinished()

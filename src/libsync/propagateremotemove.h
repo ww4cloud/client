@@ -56,7 +56,7 @@ public:
     {
     }
     void start() Q_DECL_OVERRIDE;
-    void abort() Q_DECL_OVERRIDE;
+    void abort(const bool &asyncAbort) Q_DECL_OVERRIDE;
     JobParallelism parallelism() Q_DECL_OVERRIDE { return _item->_isDirectory ? WaitForFinished : FullParallelism; }
 
     /**

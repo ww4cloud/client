@@ -99,7 +99,14 @@ public:
     virtual qint64 committedDiskSpace() const { return 0; }
 
 public slots:
-    virtual void abort() {}
+    /*
+     * Asynchronous abort requires emit of abortFinished() signal,
+     * while synchronous is expected to abort immedietaly.
+    */
+    virtual void abort(const bool &asyncAbort) {
+        if (asyncAbort)
+            emit abortFinished();
+    }
 
     /** Starts this job, or a new subjob
      * returns true if a job was started.
@@ -190,10 +197,11 @@ public:
     SyncFileItemVector _tasksToDo;
     QVector<PropagatorJob *> _runningJobs;
     SyncFileItem::Status _hasError; // NoStatus,  or NormalError / SoftError if there was an error
+    quint64 _abortsCount;
 
     explicit PropagatorCompositeJob(OwncloudPropagator *propagator)
         : PropagatorJob(propagator)
-        , _hasError(SyncFileItem::NoStatus)
+        , _hasError(SyncFileItem::NoStatus), _abortsCount(0)
     {
     }
 
@@ -214,11 +222,32 @@ public:
 
     virtual bool scheduleSelfOrChild() Q_DECL_OVERRIDE;
     virtual JobParallelism parallelism() Q_DECL_OVERRIDE;
-    virtual void abort() Q_DECL_OVERRIDE;
+
+    /*
+     * Abort synchronously or asynchronously - some jobs
+     * require to be finished without immediete abort (abort on job might
+     * cause conflicts/duplicated files - owncloud/client/issues/5949)
+     */
+    virtual void abort(const bool &asyncAbort) Q_DECL_OVERRIDE
+    {
+        if (!_runningJobs.empty()) {
+            _abortsCount = _runningJobs.size();
+            foreach (PropagatorJob *j, _runningJobs) {
+                if (asyncAbort) {
+                    connect(j, SIGNAL(abortFinished()),
+                            this, SLOT(slotSubJobAbortFinished()));
+                }
+                j->abort(asyncAbort);
+            }
+        } else if (asyncAbort){
+            emit abortFinished();
+        }
+    }
 
     qint64 committedDiskSpace() const Q_DECL_OVERRIDE;
 
 private slots:
+    void slotSubJobAbortFinished();
     bool possiblyRunNextJob(PropagatorJob *next)
     {
         if (next->_state == NotYetStarted) {
@@ -259,14 +288,17 @@ public:
 
     virtual bool scheduleSelfOrChild() Q_DECL_OVERRIDE;
     virtual JobParallelism parallelism() Q_DECL_OVERRIDE;
-    virtual void abort() Q_DECL_OVERRIDE
+    virtual void abort(const bool &asyncAbort) Q_DECL_OVERRIDE
     {
-        // Abort first job and sub jobs
-        // Finished abort will be announced via abortFinished()
-        // (look contructor implementation)
         if (_firstJob)
-            _firstJob->abort();
-        _subJobs.abort();
+            // Force first job to abort synchronously
+            // even if caller allows async abort (asyncAbort)
+            _firstJob->abort(false);
+
+        if (asyncAbort){
+            connect(&_subJobs, SIGNAL(abortFinished()), this, SIGNAL(abortFinished()));
+        }
+        _subJobs.abort(asyncAbort);
     }
 
     void increaseAffectedCount()
@@ -399,9 +431,12 @@ public:
     {
         _abortRequested.fetchAndStoreOrdered(true);
         if (_rootJob) {
-            // Invoke abort and wait for abort finish to finalize
+            // We're possibly already in an item's finished stack
+            // Invoke abort and wait for abort finish
+            // to finalize asynchronously with abortFinished
             connect(_rootJob.data(), SIGNAL(abortFinished()), this, SLOT(slotAbortFinished()));
-            QMetaObject::invokeMethod(_rootJob.data(), "abort", Qt::QueuedConnection);
+            QTimer::singleShot(jobTimeoutDuration(), this, SLOT(abortTimeout()));
+            QMetaObject::invokeMethod(_rootJob.data(), "abort", Qt::QueuedConnection, Q_ARG(bool, true));
         } else {
             // No root job, send abort finished slot
             slotAbortFinished();
@@ -425,6 +460,13 @@ public:
     DiskSpaceResult diskSpaceCheck() const;
 
 private slots:
+
+    void abortTimeout()
+    {
+        // Abort synchronously (asyncAbort set to false) and finish
+        QMetaObject::invokeMethod(_rootJob.data(), "abort", Qt::QueuedConnection, Q_ARG(bool, false));
+        slotAbortFinished();
+    }
 
     void slotAbortFinished() {
         QMetaObject::invokeMethod(this, "emitFinished", Qt::QueuedConnection, Q_ARG(SyncFileItem::Status, SyncFileItem::NormalError));

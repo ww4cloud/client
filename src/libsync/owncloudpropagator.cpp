@@ -740,17 +740,13 @@ PropagatorJob::JobParallelism PropagatorCompositeJob::parallelism()
     return FullParallelism;
 }
 
-void PropagatorCompositeJob::abort()
+void PropagatorCompositeJob::slotSubJobAbortFinished()
 {
-    foreach (PropagatorJob *j, _runningJobs)
-        j->abort();
+    // Count that job has been finished
+    _abortsCount--;
 
-    if (_runningJobs.size() != 0) {
-        // Some aborted jobs might result in conflicts (owncloud/client/issues/5949)
-        // Give running jobs max jobTimeoutDuration seconds to finish on their own and finish job
-        QTimer::singleShot(propagator()->jobTimeoutDuration(), this, SIGNAL(abortFinished()));
-    } else {
-        // No running jobs, emit finish immedietaly
+    // Emit abort if last job has been aborted
+    if (_abortsCount == 0) {
         emit abortFinished();
     }
 }
@@ -868,7 +864,6 @@ PropagateDirectory::PropagateDirectory(OwncloudPropagator *propagator, const Syn
         connect(_firstJob.data(), SIGNAL(finished(SyncFileItem::Status)), this, SLOT(slotFirstJobFinished(SyncFileItem::Status)));
     }
     connect(&_subJobs, SIGNAL(finished(SyncFileItem::Status)), this, SLOT(slotSubJobsFinished(SyncFileItem::Status)));
-    connect(&_subJobs, SIGNAL(abortFinished()), this, SIGNAL(abortFinished()));
 }
 
 PropagatorJob::JobParallelism PropagateDirectory::parallelism()
@@ -912,7 +907,8 @@ void PropagateDirectory::slotFirstJobFinished(SyncFileItem::Status status)
 
     if (status != SyncFileItem::Success && status != SyncFileItem::Restoration) {
         if (_state != Finished) {
-            abort();
+            // Synchronously abort
+            abort(false);
             _state = Finished;
             emit finished(status);
         }
