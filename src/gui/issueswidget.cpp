@@ -13,15 +13,12 @@
  */
 
 #include <QtGui>
-#if QT_VERSION >= QT_VERSION_CHECK(5, 0, 0)
 #include <QtWidgets>
-#endif
 
 #include "issueswidget.h"
 #include "configfile.h"
 #include "syncresult.h"
 #include "logger.h"
-#include "utility.h"
 #include "theme.h"
 #include "folderman.h"
 #include "syncfileitem.h"
@@ -32,8 +29,9 @@
 #include "accountstate.h"
 #include "account.h"
 #include "accountmanager.h"
-#include "syncjournalfilerecord.h"
+#include "common/syncjournalfilerecord.h"
 #include "elidedlabel.h"
+
 
 #include "ui_issueswidget.h"
 
@@ -47,30 +45,33 @@ IssuesWidget::IssuesWidget(QWidget *parent)
 {
     _ui->setupUi(this);
 
-    connect(ProgressDispatcher::instance(), SIGNAL(progressInfo(QString, ProgressInfo)),
-        this, SLOT(slotProgressInfo(QString, ProgressInfo)));
-    connect(ProgressDispatcher::instance(), SIGNAL(itemCompleted(QString, SyncFileItemPtr)),
-        this, SLOT(slotItemCompleted(QString, SyncFileItemPtr)));
+    connect(ProgressDispatcher::instance(), &ProgressDispatcher::progressInfo,
+        this, &IssuesWidget::slotProgressInfo);
+    connect(ProgressDispatcher::instance(), &ProgressDispatcher::itemCompleted,
+        this, &IssuesWidget::slotItemCompleted);
     connect(ProgressDispatcher::instance(), &ProgressDispatcher::syncError,
         this, &IssuesWidget::addError);
 
-    connect(_ui->_treeWidget, SIGNAL(itemActivated(QTreeWidgetItem *, int)), SLOT(slotOpenFile(QTreeWidgetItem *, int)));
-    connect(_ui->copyIssuesButton, SIGNAL(clicked()), SIGNAL(copyToClipboard()));
+    connect(_ui->_treeWidget, &QTreeWidget::itemActivated, this, &IssuesWidget::slotOpenFile);
+    connect(_ui->copyIssuesButton, &QAbstractButton::clicked, this, &IssuesWidget::copyToClipboard);
 
-    connect(_ui->showIgnores, SIGNAL(toggled(bool)), SLOT(slotRefreshIssues()));
-    connect(_ui->showWarnings, SIGNAL(toggled(bool)), SLOT(slotRefreshIssues()));
-    connect(_ui->filterAccount, SIGNAL(currentIndexChanged(int)), SLOT(slotRefreshIssues()));
-    connect(_ui->filterAccount, SIGNAL(currentIndexChanged(int)), SLOT(slotUpdateFolderFilters()));
-    connect(_ui->filterFolder, SIGNAL(currentIndexChanged(int)), SLOT(slotRefreshIssues()));
+    _ui->_treeWidget->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(_ui->_treeWidget, &QTreeWidget::customContextMenuRequested, this, &IssuesWidget::slotItemContextMenu);
+
+    connect(_ui->showIgnores, &QAbstractButton::toggled, this, &IssuesWidget::slotRefreshIssues);
+    connect(_ui->showWarnings, &QAbstractButton::toggled, this, &IssuesWidget::slotRefreshIssues);
+    connect(_ui->filterAccount, static_cast<void (QComboBox::*)(int)>(&QComboBox::currentIndexChanged), this, &IssuesWidget::slotRefreshIssues);
+    connect(_ui->filterAccount, static_cast<void (QComboBox::*)(int)>(&QComboBox::currentIndexChanged), this, &IssuesWidget::slotUpdateFolderFilters);
+    connect(_ui->filterFolder, static_cast<void (QComboBox::*)(int)>(&QComboBox::currentIndexChanged), this, &IssuesWidget::slotRefreshIssues);
     for (auto account : AccountManager::instance()->accounts()) {
         slotAccountAdded(account.data());
     }
-    connect(AccountManager::instance(), SIGNAL(accountAdded(AccountState *)),
-        SLOT(slotAccountAdded(AccountState *)));
-    connect(AccountManager::instance(), SIGNAL(accountRemoved(AccountState *)),
-        SLOT(slotAccountRemoved(AccountState *)));
-    connect(FolderMan::instance(), SIGNAL(folderListChanged(Folder::Map)),
-        SLOT(slotUpdateFolderFilters()));
+    connect(AccountManager::instance(), &AccountManager::accountAdded,
+        this, &IssuesWidget::slotAccountAdded);
+    connect(AccountManager::instance(), &AccountManager::accountRemoved,
+        this, &IssuesWidget::slotAccountRemoved);
+    connect(FolderMan::instance(), &FolderMan::folderListChanged,
+        this, &IssuesWidget::slotUpdateFolderFilters);
 
 
     // Adjust copyToClipboard() when making changes here!
@@ -88,7 +89,7 @@ IssuesWidget::IssuesWidget(QWidget *parent)
     _ui->_treeWidget->setHeaderLabels(header);
     int timestampColumnWidth =
         ActivityItemDelegate::rowHeight() // icon
-        + _ui->_treeWidget->fontMetrics().width(ProtocolWidget::timeString(QDateTime::currentDateTime()))
+        + _ui->_treeWidget->fontMetrics().width(ProtocolItem::timeString(QDateTime::currentDateTime()))
         + timestampColumnExtra;
     _ui->_treeWidget->setColumnWidth(0, timestampColumnWidth);
     _ui->_treeWidget->setColumnWidth(1, 180);
@@ -110,6 +111,16 @@ void IssuesWidget::showEvent(QShowEvent *ev)
 {
     ConfigFile cfg;
     cfg.restoreGeometryHeader(_ui->_treeWidget->header());
+
+    // Sorting by section was newly enabled. But if we restore the header
+    // from a state where sorting was disabled, both of these flags will be
+    // false and sorting will be impossible!
+    _ui->_treeWidget->header()->setSectionsClickable(true);
+    _ui->_treeWidget->header()->setSortIndicatorShown(true);
+
+    // Switch back to "first important, then by time" ordering
+    _ui->_treeWidget->sortByColumn(0, Qt::DescendingOrder);
+
     QWidget::showEvent(ev);
 }
 
@@ -122,6 +133,8 @@ void IssuesWidget::hideEvent(QHideEvent *ev)
 
 void IssuesWidget::cleanItems(const QString &folder)
 {
+    _ui->_treeWidget->setSortingEnabled(false);
+
     // The issue list is a state, clear it and let the next sync fill it
     // with ignored files and propagation errors.
     int itemCnt = _ui->_treeWidget->topLevelItemCount();
@@ -132,6 +145,9 @@ void IssuesWidget::cleanItems(const QString &folder)
             delete item;
         }
     }
+
+    _ui->_treeWidget->setSortingEnabled(true);
+
     // update the tabtext
     emit(issueCountUpdated(_ui->_treeWidget->topLevelItemCount()));
 }
@@ -186,7 +202,7 @@ void IssuesWidget::slotItemCompleted(const QString &folder, const SyncFileItemPt
 {
     if (!item->hasErrorStatus())
         return;
-    QTreeWidgetItem *line = ProtocolWidget::createCompletedTreewidgetItem(folder, *item);
+    QTreeWidgetItem *line = ProtocolItem::create(folder, *item);
     if (!line)
         return;
     addItem(line);
@@ -221,6 +237,15 @@ void IssuesWidget::slotAccountRemoved(AccountState *account)
     updateAccountChoiceVisibility();
 }
 
+void IssuesWidget::slotItemContextMenu(const QPoint &pos)
+{
+    auto item = _ui->_treeWidget->itemAt(pos);
+    if (!item)
+        return;
+    auto globalPos = _ui->_treeWidget->viewport()->mapToGlobal(pos);
+    ProtocolItem::openContextMenu(globalPos, item, this);
+}
+
 void IssuesWidget::updateAccountChoiceVisibility()
 {
     bool visible = _ui->filterAccount->count() > 2;
@@ -243,7 +268,7 @@ bool IssuesWidget::shouldBeVisible(QTreeWidgetItem *item, AccountState *filterAc
     const QString &filterFolderAlias) const
 {
     bool visible = true;
-    auto status = item->data(0, Qt::UserRole);
+    auto status = item->data(3, Qt::UserRole);
     visible &= (_ui->showIgnores->isChecked() || status != SyncFileItem::FileIgnored);
     visible &= (_ui->showWarnings->isChecked()
         || (status != SyncFileItem::SoftError
@@ -361,8 +386,8 @@ void IssuesWidget::addError(const QString &folderAlias, const QString &message,
 
     QStringList columns;
     QDateTime timestamp = QDateTime::currentDateTime();
-    const QString timeStr = ProtocolWidget::timeString(timestamp);
-    const QString longTimeStr = ProtocolWidget::timeString(timestamp, QLocale::LongFormat);
+    const QString timeStr = ProtocolItem::timeString(timestamp);
+    const QString longTimeStr = ProtocolItem::timeString(timestamp, QLocale::LongFormat);
 
     columns << timeStr;
     columns << ""; // no "File" entry
@@ -371,13 +396,14 @@ void IssuesWidget::addError(const QString &folderAlias, const QString &message,
 
     QIcon icon = Theme::instance()->syncStateIcon(SyncResult::Error);
 
-    QTreeWidgetItem *twitem = new QTreeWidgetItem(columns);
+    QTreeWidgetItem *twitem = new ProtocolItem(columns);
     twitem->setData(0, Qt::SizeHintRole, QSize(0, ActivityItemDelegate::rowHeight()));
+    twitem->setData(0, Qt::UserRole, timestamp);
     twitem->setIcon(0, icon);
     twitem->setToolTip(0, longTimeStr);
-    twitem->setToolTip(3, message);
-    twitem->setData(0, Qt::UserRole, SyncFileItem::NormalError);
     twitem->setData(2, Qt::UserRole, folderAlias);
+    twitem->setToolTip(3, message);
+    twitem->setData(3, Qt::UserRole, SyncFileItem::NormalError);
 
     addItem(twitem);
     addErrorWidget(twitem, message, category);

@@ -27,15 +27,16 @@
 #include <QTimer>
 #include <QMutex>
 #include <QCoreApplication>
-#include <QPixmap>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QPainter>
 
 #include "networkjobs.h"
 #include "account.h"
 #include "owncloudpropagator.h"
 
 #include "creds/abstractcredentials.h"
+#include "creds/httpcredentials.h"
 
 namespace OCC {
 
@@ -47,6 +48,7 @@ Q_LOGGING_CATEGORY(lcAvatarJob, "sync.networkjob.avatar", QtInfoMsg)
 Q_LOGGING_CATEGORY(lcMkColJob, "sync.networkjob.mkcol", QtInfoMsg)
 Q_LOGGING_CATEGORY(lcProppatchJob, "sync.networkjob.proppatch", QtInfoMsg)
 Q_LOGGING_CATEGORY(lcJsonApiJob, "sync.networkjob.jsonapi", QtInfoMsg)
+Q_LOGGING_CATEGORY(lcDetermineAuthTypeJob, "sync.networkjob.determineauthtype", QtInfoMsg)
 
 RequestEtagJob::RequestEtagJob(AccountPtr account, const QString &path, QObject *parent)
     : AbstractNetworkJob(account, path, parent)
@@ -360,14 +362,14 @@ bool LsColJob::finished()
     int httpCode = reply()->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
     if (httpCode == 207 && contentType.contains("application/xml; charset=utf-8")) {
         LsColXMLParser parser;
-        connect(&parser, SIGNAL(directoryListingSubfolders(const QStringList &)),
-            this, SIGNAL(directoryListingSubfolders(const QStringList &)));
-        connect(&parser, SIGNAL(directoryListingIterated(const QString &, const QMap<QString, QString> &)),
-            this, SIGNAL(directoryListingIterated(const QString &, const QMap<QString, QString> &)));
-        connect(&parser, SIGNAL(finishedWithError(QNetworkReply *)),
-            this, SIGNAL(finishedWithError(QNetworkReply *)));
-        connect(&parser, SIGNAL(finishedWithoutError()),
-            this, SIGNAL(finishedWithoutError()));
+        connect(&parser, &LsColXMLParser::directoryListingSubfolders,
+            this, &LsColJob::directoryListingSubfolders);
+        connect(&parser, &LsColXMLParser::directoryListingIterated,
+            this, &LsColJob::directoryListingIterated);
+        connect(&parser, &LsColXMLParser::finishedWithError,
+            this, &LsColJob::finishedWithError);
+        connect(&parser, &LsColXMLParser::finishedWithoutError,
+            this, &LsColJob::finishedWithoutError);
 
         QString expectedPath = reply()->request().url().path(); // something like "/owncloud/remote.php/webdav/folder"
         if (!parser.parse(reply()->readAll(), &_sizes, expectedPath)) {
@@ -395,15 +397,19 @@ namespace {
 CheckServerJob::CheckServerJob(AccountPtr account, QObject *parent)
     : AbstractNetworkJob(account, QLatin1String(statusphpC), parent)
     , _subdirFallback(false)
+    , _permanentRedirects(0)
 {
     setIgnoreCredentialFailure(true);
+    connect(this, &AbstractNetworkJob::redirected,
+        this, &CheckServerJob::slotRedirected);
 }
 
 void CheckServerJob::start()
 {
-    sendRequest("GET", makeAccountUrl(path()));
-    connect(reply(), SIGNAL(metaDataChanged()), this, SLOT(metaDataChangedSlot()));
-    connect(reply(), SIGNAL(encrypted()), this, SLOT(encryptedSlot()));
+    _serverUrl = account()->url();
+    sendRequest("GET", Utility::concatUrlPath(_serverUrl, path()));
+    connect(reply(), &QNetworkReply::metaDataChanged, this, &CheckServerJob::metaDataChangedSlot);
+    connect(reply(), &QNetworkReply::encrypted, this, &CheckServerJob::encryptedSlot);
     AbstractNetworkJob::start();
 }
 
@@ -441,16 +447,32 @@ static void mergeSslConfigurationForSslButton(const QSslConfiguration &config, A
     if (!config.sessionCipher().isNull()) {
         account->_sessionCipher = config.sessionCipher();
     }
-#if QT_VERSION > QT_VERSION_CHECK(5, 2, 0)
     if (config.sessionTicket().length() > 0) {
         account->_sessionTicket = config.sessionTicket();
     }
-#endif
 }
 
 void CheckServerJob::encryptedSlot()
 {
     mergeSslConfigurationForSslButton(reply()->sslConfiguration(), account());
+}
+
+void CheckServerJob::slotRedirected(QNetworkReply *reply, const QUrl &targetUrl, int redirectCount)
+{
+    QByteArray slashStatusPhp("/");
+    slashStatusPhp.append(statusphpC);
+
+    int httpCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    QString path = targetUrl.path();
+    if ((httpCode == 301 || httpCode == 308) // permanent redirection
+        && redirectCount == _permanentRedirects // don't apply permanent redirects after a temporary one
+        && path.endsWith(slashStatusPhp)) {
+        _serverUrl = targetUrl;
+        _serverUrl.setPath(path.left(path.size() - slashStatusPhp.size()));
+        qCInfo(lcCheckServerJob) << "status.php was permanently redirected to"
+                                 << targetUrl << "new server url is" << _serverUrl;
+        ++_permanentRedirects;
+    }
 }
 
 void CheckServerJob::metaDataChangedSlot()
@@ -462,13 +484,11 @@ void CheckServerJob::metaDataChangedSlot()
 
 bool CheckServerJob::finished()
 {
-#if QT_VERSION > QT_VERSION_CHECK(5, 2, 0)
     if (reply()->request().url().scheme() == QLatin1String("https")
         && reply()->sslConfiguration().sessionTicket().isEmpty()
         && reply()->error() == QNetworkReply::NoError) {
         qCWarning(lcCheckServerJob) << "No SSL session identifier / session ticket is used, this might impact sync performance negatively.";
     }
-#endif
 
     mergeSslConfigurationForSslButton(reply()->sslConfiguration(), account());
 
@@ -497,7 +517,7 @@ bool CheckServerJob::finished()
 
         qCInfo(lcCheckServerJob) << "status.php returns: " << status << " " << reply()->error() << " Reply: " << reply();
         if (status.object().contains("installed")) {
-            emit instanceFound(reply()->url(), status.object());
+            emit instanceFound(_serverUrl, status.object());
         } else {
             qCWarning(lcCheckServerJob) << "No proper answer on " << reply()->url();
             emit instanceNotFound(reply());
@@ -606,10 +626,11 @@ bool PropfindJob::finished()
 
 /*********************************************************************************************/
 
-AvatarJob::AvatarJob(AccountPtr account, QObject *parent)
+#ifndef TOKEN_AUTH_ONLY
+AvatarJob::AvatarJob(AccountPtr account, const QString &userId, int size, QObject *parent)
     : AbstractNetworkJob(account, QString(), parent)
 {
-    _avatarUrl = Utility::concatUrlPath(account->url(), QString("remote.php/dav/avatars/%1/128.png").arg(account->davUser()));
+    _avatarUrl = Utility::concatUrlPath(account->url(), QString("remote.php/dav/avatars/%1/%2.png").arg(userId, QString::number(size)));
 }
 
 void AvatarJob::start()
@@ -617,6 +638,26 @@ void AvatarJob::start()
     QNetworkRequest req;
     sendRequest("GET", _avatarUrl, req);
     AbstractNetworkJob::start();
+}
+
+QImage AvatarJob::makeCircularAvatar(const QImage &baseAvatar)
+{
+    int dim = baseAvatar.width();
+
+    QImage avatar(dim, dim, baseAvatar.format());
+    avatar.fill(Qt::transparent);
+
+    QPainter painter(&avatar);
+    painter.setRenderHint(QPainter::Antialiasing);
+
+    QPainterPath path;
+    path.addEllipse(0, 0, dim, dim);
+    painter.setClipPath(path);
+
+    painter.drawImage(0, 0, baseAvatar);
+    painter.end();
+
+    return avatar;
 }
 
 bool AvatarJob::finished()
@@ -636,6 +677,7 @@ bool AvatarJob::finished()
     emit(avatarPixmap(avImage));
     return true;
 }
+#endif
 
 /*********************************************************************************************/
 
@@ -796,6 +838,123 @@ bool JsonApiJob::finished()
 
     emit jsonReceived(json, statusCode);
     return true;
+}
+
+DetermineAuthTypeJob::DetermineAuthTypeJob(AccountPtr account, QObject *parent)
+    : QObject(parent)
+    , _account(account)
+{
+}
+
+void DetermineAuthTypeJob::start()
+{
+    qCInfo(lcDetermineAuthTypeJob) << "Determining auth type for" << _account->davUrl();
+
+    QNetworkRequest req;
+    // Prevent HttpCredentialsAccessManager from setting an Authorization header.
+    req.setAttribute(HttpCredentials::DontAddCredentialsAttribute, true);
+    // Don't reuse previous auth credentials
+    req.setAttribute(QNetworkRequest::AuthenticationReuseAttribute, QNetworkRequest::Manual);
+    // Don't send cookies, we can't determine the auth type if we're logged in
+    req.setAttribute(QNetworkRequest::CookieLoadControlAttribute, QNetworkRequest::Manual);
+
+    // Start two parallel requests, one determines whether it's a shib server
+    // and the other checks the HTTP auth method.
+    auto get = _account->sendRequest("GET", _account->davUrl(), req);
+    auto propfind = _account->sendRequest("PROPFIND", _account->davUrl(), req);
+    get->setTimeout(30 * 1000);
+    propfind->setTimeout(30 * 1000);
+    get->setIgnoreCredentialFailure(true);
+    propfind->setIgnoreCredentialFailure(true);
+
+    connect(get, &AbstractNetworkJob::redirected, this, [this, get](QNetworkReply *, const QUrl &target, int) {
+#ifndef NO_SHIBBOLETH
+        QRegExp shibbolethyWords("SAML|wayf");
+        shibbolethyWords.setCaseSensitivity(Qt::CaseInsensitive);
+        if (target.toString().contains(shibbolethyWords)) {
+            _resultGet = Shibboleth;
+            get->setFollowRedirects(false);
+        }
+#endif
+    });
+    connect(get, &SimpleNetworkJob::finishedSignal, this, [this]() {
+        _getDone = true;
+        checkBothDone();
+    });
+    connect(propfind, &SimpleNetworkJob::finishedSignal, this, [this](QNetworkReply *reply) {
+        auto authChallenge = reply->rawHeader("WWW-Authenticate").toLower();
+        if (authChallenge.contains("bearer ")) {
+            _resultPropfind = OAuth;
+        } else if (authChallenge.isEmpty()) {
+            qCWarning(lcDetermineAuthTypeJob) << "Did not receive WWW-Authenticate reply to auth-test PROPFIND";
+        }
+        _propfindDone = true;
+        checkBothDone();
+    });
+}
+
+void DetermineAuthTypeJob::checkBothDone()
+{
+    if (!_getDone || !_propfindDone)
+        return;
+    auto result = _resultPropfind;
+    // OAuth > Shib > Basic
+    if (_resultGet == Shibboleth && result != OAuth)
+        result = Shibboleth;
+    qCInfo(lcDetermineAuthTypeJob) << "Auth type for" << _account->davUrl() << "is" << result;
+    emit authType(result);
+    deleteLater();
+}
+
+SimpleNetworkJob::SimpleNetworkJob(AccountPtr account, QObject *parent)
+    : AbstractNetworkJob(account, QString(), parent)
+{
+}
+
+QNetworkReply *SimpleNetworkJob::startRequest(const QByteArray &verb, const QUrl &url,
+    QNetworkRequest req, QIODevice *requestBody)
+{
+    auto reply = sendRequest(verb, url, req, requestBody);
+    start();
+    return reply;
+}
+
+bool SimpleNetworkJob::finished()
+{
+    emit finishedSignal(reply());
+    return true;
+}
+
+void fetchPrivateLinkUrl(AccountPtr account, const QString &remotePath,
+    const QByteArray &numericFileId, QObject *target,
+    std::function<void(const QString &url)> targetFun)
+{
+    QString oldUrl;
+    if (!numericFileId.isEmpty())
+        oldUrl = account->deprecatedPrivateLinkUrl(numericFileId).toString(QUrl::FullyEncoded);
+
+    // Retrieve the new link by PROPFIND
+    PropfindJob *job = new PropfindJob(account, remotePath, target);
+    job->setProperties(
+        QList<QByteArray>()
+        << "http://owncloud.org/ns:fileid" // numeric file id for fallback private link generation
+        << "http://owncloud.org/ns:privatelink");
+    job->setTimeout(10 * 1000);
+    QObject::connect(job, &PropfindJob::result, target, [=](const QVariantMap &result) {
+        auto privateLinkUrl = result["privatelink"].toString();
+        auto numericFileId = result["fileid"].toByteArray();
+        if (!privateLinkUrl.isEmpty()) {
+            targetFun(privateLinkUrl);
+        } else if (!numericFileId.isEmpty()) {
+            targetFun(account->deprecatedPrivateLinkUrl(numericFileId).toString(QUrl::FullyEncoded));
+        } else {
+            targetFun(oldUrl);
+        }
+    });
+    QObject::connect(job, &PropfindJob::finishedWithError, target, [=](QNetworkReply *) {
+        targetFun(oldUrl);
+    });
+    job->start();
 }
 
 } // namespace OCC

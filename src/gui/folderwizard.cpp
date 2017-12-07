@@ -22,7 +22,7 @@
 #include "accountstate.h"
 #include "creds/abstractcredentials.h"
 #include "wizard/owncloudwizard.h"
-#include "asserts.h"
+#include "common/asserts.h"
 
 #include <QDesktopServices>
 #include <QDir>
@@ -35,6 +35,7 @@
 #include <QWizardPage>
 #include <QTreeWidget>
 #include <QVBoxLayout>
+#include <QEvent>
 
 #include <stdlib.h>
 
@@ -62,7 +63,7 @@ FolderWizardLocalPath::FolderWizardLocalPath(const AccountPtr &account)
 {
     _ui.setupUi(this);
     registerField(QLatin1String("sourceFolder*"), _ui.localFolderLineEdit);
-    connect(_ui.localFolderChooseBtn, SIGNAL(clicked()), this, SLOT(slotChooseLocalFolder()));
+    connect(_ui.localFolderChooseBtn, &QAbstractButton::clicked, this, &FolderWizardLocalPath::slotChooseLocalFolder);
     _ui.localFolderChooseBtn->setToolTip(tr("Click to select a local folder to sync."));
 
     QString defaultPath = QDir::homePath() + QLatin1Char('/') + Theme::instance()->appName();
@@ -151,21 +152,19 @@ FolderWizardRemotePath::FolderWizardRemotePath(const AccountPtr &account)
     _ui.folderTreeWidget->setSortingEnabled(true);
     _ui.folderTreeWidget->sortByColumn(0, Qt::AscendingOrder);
 
-    connect(_ui.addFolderButton, SIGNAL(clicked()), SLOT(slotAddRemoteFolder()));
-    connect(_ui.refreshButton, SIGNAL(clicked()), SLOT(slotRefreshFolders()));
-    connect(_ui.folderTreeWidget, SIGNAL(itemExpanded(QTreeWidgetItem *)), SLOT(slotItemExpanded(QTreeWidgetItem *)));
-    connect(_ui.folderTreeWidget, SIGNAL(currentItemChanged(QTreeWidgetItem *, QTreeWidgetItem *)), SLOT(slotCurrentItemChanged(QTreeWidgetItem *)));
-    connect(_ui.folderEntry, SIGNAL(textEdited(QString)), SLOT(slotFolderEntryEdited(QString)));
+    connect(_ui.addFolderButton, &QAbstractButton::clicked, this, &FolderWizardRemotePath::slotAddRemoteFolder);
+    connect(_ui.refreshButton, &QAbstractButton::clicked, this, &FolderWizardRemotePath::slotRefreshFolders);
+    connect(_ui.folderTreeWidget, &QTreeWidget::itemExpanded, this, &FolderWizardRemotePath::slotItemExpanded);
+    connect(_ui.folderTreeWidget, &QTreeWidget::currentItemChanged, this, &FolderWizardRemotePath::slotCurrentItemChanged);
+    connect(_ui.folderEntry, &QLineEdit::textEdited, this, &FolderWizardRemotePath::slotFolderEntryEdited);
 
     _lscolTimer.setInterval(500);
     _lscolTimer.setSingleShot(true);
-    connect(&_lscolTimer, SIGNAL(timeout()), SLOT(slotLsColFolderEntry()));
+    connect(&_lscolTimer, &QTimer::timeout, this, &FolderWizardRemotePath::slotLsColFolderEntry);
 
-#if QT_VERSION >= QT_VERSION_CHECK(5, 0, 0)
     _ui.folderTreeWidget->header()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
     // Make sure that there will be a scrollbar when the contents is too wide
     _ui.folderTreeWidget->header()->setStretchLastSection(false);
-#endif
 }
 
 void FolderWizardRemotePath::slotAddRemoteFolder()
@@ -200,9 +199,9 @@ void FolderWizardRemotePath::slotCreateRemoteFolder(const QString &folder)
 
     MkColJob *job = new MkColJob(_account, fullPath, this);
     /* check the owncloud configuration file and query the ownCloud */
-    connect(job, SIGNAL(finished(QNetworkReply::NetworkError)),
-        SLOT(slotCreateRemoteFolderFinished(QNetworkReply::NetworkError)));
-    connect(job, SIGNAL(networkError(QNetworkReply *)), SLOT(slotHandleMkdirNetworkError(QNetworkReply *)));
+    connect(job, static_cast<void (MkColJob::*)(QNetworkReply::NetworkError)>(&MkColJob::finished),
+        this, &FolderWizardRemotePath::slotCreateRemoteFolderFinished);
+    connect(job, &AbstractNetworkJob::networkError, this, &FolderWizardRemotePath::slotHandleMkdirNetworkError);
     job->start();
 }
 
@@ -375,10 +374,10 @@ void FolderWizardRemotePath::slotLsColFolderEntry()
     // No error handling, no updating, we do this manually
     // because of extra logic in the typed-path case.
     disconnect(job, 0, this, 0);
-    connect(job, SIGNAL(finishedWithError(QNetworkReply *)),
-        SLOT(slotTypedPathError(QNetworkReply *)));
-    connect(job, SIGNAL(directoryListingSubfolders(QStringList)),
-        SLOT(slotTypedPathFound(QStringList)));
+    connect(job, &LsColJob::finishedWithError,
+        this, &FolderWizardRemotePath::slotTypedPathError);
+    connect(job, &LsColJob::directoryListingSubfolders,
+        this, &FolderWizardRemotePath::slotTypedPathFound);
 }
 
 void FolderWizardRemotePath::slotTypedPathFound(const QStringList &subpaths)
@@ -406,10 +405,10 @@ LsColJob *FolderWizardRemotePath::runLsColJob(const QString &path)
 {
     LsColJob *job = new LsColJob(_account, path, this);
     job->setProperties(QList<QByteArray>() << "resourcetype");
-    connect(job, SIGNAL(directoryListingSubfolders(QStringList)),
-        SLOT(slotUpdateDirectories(QStringList)));
-    connect(job, SIGNAL(finishedWithError(QNetworkReply *)),
-        SLOT(slotHandleLsColNetworkError(QNetworkReply *)));
+    connect(job, &LsColJob::directoryListingSubfolders,
+        this, &FolderWizardRemotePath::slotUpdateDirectories);
+    connect(job, &LsColJob::finishedWithError,
+        this, &FolderWizardRemotePath::slotHandleLsColNetworkError);
     job->start();
 
     return job;
@@ -447,16 +446,10 @@ bool FolderWizardRemotePath::isComplete() const
         } else if (dir.startsWith(curDir + QLatin1Char('/'))) {
             warnStrings.append(tr("You are already syncing <i>%1</i>, which is a parent folder of <i>%2</i>.").arg(Utility::escape(curDir), Utility::escape(dir)));
         }
-
-        if (curDir == QLatin1String("/")) {
-            warnStrings.append(tr("You are already syncing all your files. Syncing another folder is <b>not</b> supported. "
-                                  "If you want to sync multiple folders, please remove the currently configured "
-                                  "root folder sync."));
-        }
     }
 
     showWarn(formatWarnings(warnStrings));
-    return warnStrings.isEmpty();
+    return true;
 }
 
 void FolderWizardRemotePath::cleanupPage()
@@ -544,9 +537,11 @@ FolderWizard::FolderWizard(AccountPtr account, QWidget *parent)
 {
     setWindowFlags(windowFlags() & ~Qt::WindowContextHelpButtonHint);
     setPage(Page_Source, _folderWizardSourcePage);
+    _folderWizardSourcePage->installEventFilter(this);
     if (!Theme::instance()->singleSyncFolder()) {
         _folderWizardTargetPage = new FolderWizardRemotePath(account);
         setPage(Page_Target, _folderWizardTargetPage);
+        _folderWizardTargetPage->installEventFilter(this);
     }
     setPage(Page_SelectiveSync, _folderWizardSelectiveSyncPage);
 
@@ -559,5 +554,25 @@ FolderWizard::~FolderWizard()
 {
 }
 
+bool FolderWizard::eventFilter(QObject *watched, QEvent *event)
+{
+    if (event->type() == QEvent::LayoutRequest) {
+        // Workaround QTBUG-3396:  forces QWizardPrivate::updateLayout()
+        QTimer::singleShot(0, this, [this] { setTitleFormat(titleFormat()); });
+    }
+    return QWizard::eventFilter(watched, event);
+}
+
+void FolderWizard::resizeEvent(QResizeEvent *event)
+{
+    QWizard::resizeEvent(event);
+
+    // workaround for QTBUG-22819: when the error label word wrap, the minimum height is not adjusted
+    int hfw = currentPage()->heightForWidth(currentPage()->width());
+    if (currentPage()->height() < hfw) {
+        currentPage()->setMinimumSize(currentPage()->minimumSizeHint().width(), hfw);
+        setTitleFormat(titleFormat()); // And another workaround for QTBUG-3396
+    }
+}
 
 } // end namespace

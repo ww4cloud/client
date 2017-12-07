@@ -18,7 +18,6 @@
 #include "folderstatusmodel.h"
 #include "folderman.h"
 #include "accountstate.h"
-#include "utility.h"
 #include <theme.h>
 #include <account.h>
 
@@ -60,7 +59,7 @@ QSize FolderStatusDelegate::sizeHint(const QStyleOptionViewItem &option,
     auto classif = static_cast<const FolderStatusModel *>(index.model())->classify(index);
     if (classif == FolderStatusModel::AddButton) {
         const int margins = aliasFm.height(); // same as 2*aliasMargin of paint
-        QFontMetrics fm(option.font);
+        QFontMetrics fm(qApp->font("QPushButton"));
         QStyleOptionButton opt;
         static_cast<QStyleOption &>(opt) = option;
         opt.text = addFolderText();
@@ -139,12 +138,10 @@ void FolderStatusDelegate::paint(QPainter *painter, const QStyleOptionViewItem &
         opt.rect.setWidth(qMin(opt.rect.width(), hint.width()));
         opt.rect.adjust(0, aliasMargin, 0, -aliasMargin);
         opt.rect = QStyle::visualRect(option.direction, option.rect, opt.rect);
-        QApplication::style()->drawControl(QStyle::CE_PushButton, &opt, painter
-#if QT_VERSION >= QT_VERSION_CHECK(5, 0, 0)
-            ,
-            option.widget
-#endif
-            );
+        painter->save();
+        painter->setFont(qApp->font("QPushButton"));
+        QApplication::style()->drawControl(QStyle::CE_PushButton, &opt, painter, option.widget);
+        painter->restore();
         return;
     }
 
@@ -309,11 +306,7 @@ void FolderStatusDelegate::paint(QPainter *painter, const QStyleOptionViewItem &
         pBRect.setHeight(barHeight);
         pBRect.setWidth(overallWidth - 2 * margin);
 
-#if QT_VERSION < QT_VERSION_CHECK(5, 0, 0)
-        QStyleOptionProgressBarV2 pBarOpt;
-#else
         QStyleOptionProgressBar pBarOpt;
-#endif
 
         pBarOpt.state = option.state | QStyle::State_Horizontal;
         pBarOpt.minimum = 0;

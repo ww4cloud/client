@@ -17,7 +17,7 @@
 #include <QLoggingCategory>
 #include <QNetworkReply>
 #include <QNetworkProxyFactory>
-#include <QPixmap>
+#include <QXmlStreamReader>
 
 #include "connectionvalidator.h"
 #include "account.h"
@@ -116,9 +116,9 @@ void ConnectionValidator::slotCheckServerAndAuth()
     CheckServerJob *checkJob = new CheckServerJob(_account, this);
     checkJob->setTimeout(timeoutToUseMsec);
     checkJob->setIgnoreCredentialFailure(true);
-    connect(checkJob, SIGNAL(instanceFound(QUrl, QJsonObject)), SLOT(slotStatusFound(QUrl, QJsonObject)));
-    connect(checkJob, SIGNAL(instanceNotFound(QNetworkReply *)), SLOT(slotNoStatusFound(QNetworkReply *)));
-    connect(checkJob, SIGNAL(timeout(QUrl)), SLOT(slotJobTimeout(QUrl)));
+    connect(checkJob, &CheckServerJob::instanceFound, this, &ConnectionValidator::slotStatusFound);
+    connect(checkJob, &CheckServerJob::instanceNotFound, this, &ConnectionValidator::slotNoStatusFound);
+    connect(checkJob, &CheckServerJob::timeout, this, &ConnectionValidator::slotJobTimeout);
     checkJob->start();
 }
 
@@ -135,6 +135,13 @@ void ConnectionValidator::slotStatusFound(const QUrl &url, const QJsonObject &in
                                   << CheckServerJob::versionString(info)
                                   << "(" << serverVersion << ")";
 
+    // Update server url in case of redirection
+    if (_account->url() != url) {
+        qCInfo(lcConnectionValidator()) << "status.php was redirected to" << url.toString();
+        _account->setUrl(url);
+        _account->wantsAccountSaved(_account.data());
+    }
+
     if (!serverVersion.isEmpty() && !setAndCheckServerVersion(serverVersion)) {
         return;
     }
@@ -147,7 +154,7 @@ void ConnectionValidator::slotStatusFound(const QUrl &url, const QJsonObject &in
     }
 
     // now check the authentication
-    QTimer::singleShot( 0, this, SLOT( checkAuthentication() ));
+    QTimer::singleShot(0, this, &ConnectionValidator::checkAuthentication);
 }
 
 // status.php could not be loaded (network or server issue!).
@@ -194,8 +201,8 @@ void ConnectionValidator::checkAuthentication()
     PropfindJob *job = new PropfindJob(_account, "/", this);
     job->setTimeout(timeoutToUseMsec);
     job->setProperties(QList<QByteArray>() << "getlastmodified");
-    connect(job, SIGNAL(result(QVariantMap)), SLOT(slotAuthSuccess()));
-    connect(job, SIGNAL(finishedWithError(QNetworkReply *)), SLOT(slotAuthFailed(QNetworkReply *)));
+    connect(job, &PropfindJob::result, this, &ConnectionValidator::slotAuthSuccess);
+    connect(job, &PropfindJob::finishedWithError, this, &ConnectionValidator::slotAuthFailed);
     job->start();
 }
 
@@ -240,10 +247,22 @@ void ConnectionValidator::slotAuthSuccess()
 
 void ConnectionValidator::checkServerCapabilities()
 {
+    // The main flow now needs the capabilities
     JsonApiJob *job = new JsonApiJob(_account, QLatin1String("ocs/v1.php/cloud/capabilities"), this);
     job->setTimeout(timeoutToUseMsec);
-    QObject::connect(job, SIGNAL(jsonReceived(QJsonDocument, int)), this, SLOT(slotCapabilitiesRecieved(QJsonDocument)));
+    QObject::connect(job, &JsonApiJob::jsonReceived, this, &ConnectionValidator::slotCapabilitiesRecieved);
     job->start();
+
+    // And we'll retrieve the ocs config in parallel
+    // note that 'this' might be destroyed before the job finishes, so intentionally not parented
+    auto configJob = new JsonApiJob(_account, QLatin1String("ocs/v1.php/config"));
+    configJob->setTimeout(timeoutToUseMsec);
+    auto account = _account; // capturing account by value will make it live long enough
+    QObject::connect(configJob, &JsonApiJob::jsonReceived, _account.data(),
+        [=](const QJsonDocument &json) {
+            ocsConfigReceived(json, account);
+        });
+    configJob->start();
 }
 
 void ConnectionValidator::slotCapabilitiesRecieved(const QJsonDocument &json)
@@ -261,11 +280,22 @@ void ConnectionValidator::slotCapabilitiesRecieved(const QJsonDocument &json)
     fetchUser();
 }
 
+void ConnectionValidator::ocsConfigReceived(const QJsonDocument &json, AccountPtr account)
+{
+    QString host = json.object().value("ocs").toObject().value("data").toObject().value("host").toString();
+    if (host.isEmpty()) {
+        qCWarning(lcConnectionValidator) << "Could not extract 'host' from ocs config reply";
+        return;
+    }
+    qCInfo(lcConnectionValidator) << "Determined user-visible host to be" << host;
+    account->setUserVisibleHost(host);
+}
+
 void ConnectionValidator::fetchUser()
 {
     JsonApiJob *job = new JsonApiJob(_account, QLatin1String("ocs/v1.php/cloud/user"), this);
     job->setTimeout(timeoutToUseMsec);
-    QObject::connect(job, SIGNAL(jsonReceived(QJsonDocument, int)), this, SLOT(slotUserFetched(QJsonDocument)));
+    QObject::connect(job, &JsonApiJob::jsonReceived, this, &ConnectionValidator::slotUserFetched);
     job->start();
 }
 
@@ -302,20 +332,28 @@ void ConnectionValidator::slotUserFetched(const QJsonDocument &json)
     QString user = json.object().value("ocs").toObject().value("data").toObject().value("id").toString();
     if (!user.isEmpty()) {
         _account->setDavUser(user);
-
-        AvatarJob *job = new AvatarJob(_account, this);
-        job->setTimeout(20 * 1000);
-        QObject::connect(job, SIGNAL(avatarPixmap(QImage)), this, SLOT(slotAvatarImage(QImage)));
-
-        job->start();
     }
+    QString displayName = json.object().value("ocs").toObject().value("data").toObject().value("display-name").toString();
+    if (!displayName.isEmpty()) {
+        _account->setDavDisplayName(displayName);
+    }
+#ifndef TOKEN_AUTH_ONLY
+    AvatarJob *job = new AvatarJob(_account, _account->davUser(), 128, this);
+    job->setTimeout(20 * 1000);
+    QObject::connect(job, &AvatarJob::avatarPixmap, this, &ConnectionValidator::slotAvatarImage);
+    job->start();
+#else
+    reportResult(Connected);
+#endif
 }
 
+#ifndef TOKEN_AUTH_ONLY
 void ConnectionValidator::slotAvatarImage(const QImage &img)
 {
     _account->setAvatar(img);
     reportResult(Connected);
 }
+#endif
 
 void ConnectionValidator::reportResult(Status status)
 {

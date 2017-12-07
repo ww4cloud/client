@@ -18,6 +18,8 @@
 
 #include "abstractnetworkjob.h"
 
+#include <functional>
+
 class QUrl;
 class QJsonObject;
 
@@ -133,11 +135,9 @@ private:
     QList<QByteArray> _properties;
 };
 
-
+#ifndef TOKEN_AUTH_ONLY
 /**
- * @brief The AvatarJob class
- *
- * Retrieves the account users avatar from the server using a GET request.
+ * @brief Retrieves the account users avatar from the server using a GET request.
  *
  * If the server does not have the avatar, the result Pixmap is empty.
  *
@@ -147,15 +147,23 @@ class OWNCLOUDSYNC_EXPORT AvatarJob : public AbstractNetworkJob
 {
     Q_OBJECT
 public:
-    explicit AvatarJob(AccountPtr account, QObject *parent = 0);
+    /**
+     * @param userId The user for which to obtain the avatar
+     * @param size The size of the avatar (square so size*size)
+     */
+    explicit AvatarJob(AccountPtr account, const QString &userId, int size, QObject *parent = 0);
+
     void start() Q_DECL_OVERRIDE;
+
+    /** The retrieved avatar images don't have the circle shape by default */
+    static QImage makeCircularAvatar(const QImage &baseAvatar);
 
 signals:
     /**
      * @brief avatarPixmap - returns either a valid pixmap or not.
      */
 
-    void avatarPixmap(QImage);
+    void avatarPixmap(const QImage &);
 
 private slots:
     virtual bool finished() Q_DECL_OVERRIDE;
@@ -163,6 +171,7 @@ private slots:
 private:
     QUrl _avatarUrl;
 };
+#endif
 
 /**
  * @brief Send a Proppatch request
@@ -241,6 +250,11 @@ public:
     static bool installed(const QJsonObject &info);
 
 signals:
+    /** Emitted when a status.php was successfully read.
+     *
+     * \a url see _serverStatusUrl (does not include "/status.php")
+     * \a info The status.php reply information
+     */
     void instanceFound(const QUrl &url, const QJsonObject &info);
 
     /** Emitted on invalid status.php reply.
@@ -248,6 +262,11 @@ signals:
      * \a reply is never null
      */
     void instanceNotFound(QNetworkReply *reply);
+
+    /** A timeout occurred.
+     *
+     * \a url The specific url where the timeout happened.
+     */
     void timeout(const QUrl &url);
 
 private:
@@ -256,9 +275,20 @@ private:
 private slots:
     virtual void metaDataChangedSlot();
     virtual void encryptedSlot();
+    void slotRedirected(QNetworkReply *reply, const QUrl &targetUrl, int redirectCount);
 
 private:
     bool _subdirFallback;
+
+    /** The permanent-redirect adjusted account url.
+     *
+     * Note that temporary redirects or a permanent redirect behind a temporary
+     * one do not affect this url.
+     */
+    QUrl _serverUrl;
+
+    /** Keep track of how many permanent redirect were applied. */
+    int _permanentRedirects;
 };
 
 
@@ -329,6 +359,74 @@ signals:
 private:
     QList<QPair<QString, QString>> _additionalParams;
 };
+
+/**
+ * @brief Checks with auth type to use for a server
+ * @ingroup libsync
+ */
+class OWNCLOUDSYNC_EXPORT DetermineAuthTypeJob : public QObject
+{
+    Q_OBJECT
+public:
+    enum AuthType {
+        Basic, // also the catch-all fallback for backwards compatibility reasons
+        OAuth,
+        Shibboleth
+    };
+
+    explicit DetermineAuthTypeJob(AccountPtr account, QObject *parent = 0);
+    void start();
+signals:
+    void authType(AuthType);
+
+private:
+    void checkBothDone();
+
+    AccountPtr _account;
+    AuthType _resultGet = Basic;
+    AuthType _resultPropfind = Basic;
+    bool _getDone = false;
+    bool _propfindDone = false;
+};
+
+/**
+ * @brief A basic job around a network request without extra funtionality
+ * @ingroup libsync
+ *
+ * Primarily adds timeout and redirection handling.
+ */
+class OWNCLOUDSYNC_EXPORT SimpleNetworkJob : public AbstractNetworkJob
+{
+    Q_OBJECT
+public:
+    explicit SimpleNetworkJob(AccountPtr account, QObject *parent = 0);
+
+    QNetworkReply *startRequest(const QByteArray &verb, const QUrl &url,
+        QNetworkRequest req = QNetworkRequest(),
+        QIODevice *requestBody = 0);
+
+signals:
+    void finishedSignal(QNetworkReply *reply);
+private slots:
+    bool finished() Q_DECL_OVERRIDE;
+};
+
+/**
+ * @brief Runs a PROPFIND to figure out the private link url
+ *
+ * The numericFileId is used only to build the deprecatedPrivateLinkUrl
+ * locally as a fallback. If it's empty and the PROPFIND fails, targetFun
+ * will be called with an empty string.
+ *
+ * The job and signal connections are parented to the target QObject.
+ *
+ * Note: targetFun is guaranteed to be called only through the event
+ * loop and never directly.
+ */
+void OWNCLOUDSYNC_EXPORT fetchPrivateLinkUrl(
+    AccountPtr account, const QString &remotePath,
+    const QByteArray &numericFileId, QObject *target,
+    std::function<void(const QString &url)> targetFun);
 
 } // namespace OCC
 

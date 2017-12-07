@@ -4,7 +4,6 @@ if(SPHINX_FOUND)
     set(SPHINX_CACHE_DIR "${CMAKE_CURRENT_BINARY_DIR}/_doctrees")
     # HTML output directory
     set(SPHINX_HTML_DIR     "${CMAKE_CURRENT_BINARY_DIR}/html")
-    set(SPHINX_MAN_DIR      "${CMAKE_CURRENT_BINARY_DIR}/man1")
     set(SPHINX_PDF_DIR      "${CMAKE_CURRENT_BINARY_DIR}/latex")
     set(SPHINX_QCH_DIR      "${CMAKE_CURRENT_BINARY_DIR}/qthelp")
     set(SPHINX_HTMLHELP_DIR "${CMAKE_CURRENT_BINARY_DIR}/htmlhelp")
@@ -12,10 +11,10 @@ if(SPHINX_FOUND)
     # assets
     set(LATEX_LOGO          "${CMAKE_CURRENT_SOURCE_DIR}/logo-blue.pdf")
 
-    install(DIRECTORY ${SPHINX_HTML_DIR} DESTINATION ${CMAKE_INSTALL_DOCDIR} OPTIONAL)
-    install(DIRECTORY ${SPHINX_MAN_DIR} DESTINATION ${CMAKE_INSTALL_MANDIR} OPTIONAL)
-    install(DIRECTORY ${SPHINX_PDF_DIR} DESTINATION ${CMAKE_INSTALL_DOCDIR} OPTIONAL)
-    install(DIRECTORY ${SPHINX_QCH_DIR} DESTINATION ${CMAKE_INSTALL_DOCDIR} OPTIONAL)
+    set(APPLICATION_DOC_DIR "${CMAKE_INSTALL_DOCDIR}/${PACKAGE}")
+    install(DIRECTORY ${SPHINX_HTML_DIR} DESTINATION ${APPLICATION_DOC_DIR} OPTIONAL)
+    install(DIRECTORY ${SPHINX_PDF_DIR} DESTINATION ${APPLICATION_DOC_DIR} OPTIONAL)
+    install(DIRECTORY ${SPHINX_QCH_DIR} DESTINATION ${APPLICATION_DOC_DIR} OPTIONAL)
 
     configure_file("${CMAKE_CURRENT_SOURCE_DIR}/conf.py.in" conf.py @ONLY)
 
@@ -39,7 +38,13 @@ if(SPHINX_FOUND)
 				     -D latex_logo=${LATEX_LOGO}
 				     ${CMAKE_CURRENT_SOURCE_DIR}
 				     ${SPHINX_PDF_DIR} )
-        add_custom_target(doc-pdf $(MAKE) -C ${SPHINX_PDF_DIR} all-pdf
+
+        set(MAKE "make" CACHE FILEPATH "make to be used for documentation generation if not using make as generator anyway")
+        if(CMAKE_GENERATOR MATCHES "Makefiles")
+            set(MAKE "$(MAKE)")
+        endif()
+
+        add_custom_target(doc-pdf ${MAKE} -C ${SPHINX_PDF_DIR} all-pdf
 		                  DEPENDS doc-latex )
         add_dependencies(doc doc-pdf)
     endif(PDFLATEX_FOUND)
@@ -71,11 +76,6 @@ if(SPHINX_FOUND)
                                 -D html_theme=owncloud_com
 				${CMAKE_CURRENT_SOURCE_DIR}
 				${SPHINX_HTML_DIR}/com )
-    add_custom_target( doc-man  ${SPHINX_EXECUTABLE}
-	                        -q -c . -b man
-				-d ${SPHINX_CACHE_DIR}/man
-				${CMAKE_CURRENT_SOURCE_DIR}
-				${SPHINX_MAN_DIR} )
 
     ## Building CHM files requires HTML Help Workshop. Since it requires wine
     ## with special dependencies, it's impossible to write a cmake check for it.

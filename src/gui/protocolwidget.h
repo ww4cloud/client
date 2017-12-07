@@ -35,6 +35,30 @@ namespace Ui {
 class Application;
 
 /**
+ * The items used in the protocol and issue QTreeWidget
+ *
+ * Special sorting: It allows items for global entries to be moved to the top if the
+ * sorting section is the "Time" column.
+ */
+class ProtocolItem : public QTreeWidgetItem
+{
+public:
+    using QTreeWidgetItem::QTreeWidgetItem;
+
+    // Shared with IssueWidget
+    static ProtocolItem *create(const QString &folder, const SyncFileItem &item);
+    static QString timeString(QDateTime dt, QLocale::FormatType format = QLocale::NarrowFormat);
+
+    static SyncJournalFileRecord syncJournalRecord(QTreeWidgetItem *item);
+    static Folder *folder(QTreeWidgetItem *item);
+
+    static void openContextMenu(QPoint globalPos, QTreeWidgetItem *item, QWidget *parent);
+
+private:
+    bool operator<(const QTreeWidgetItem &other) const override;
+};
+
+/**
  * @brief The ProtocolWidget class
  * @ingroup gui
  */
@@ -48,10 +72,6 @@ public:
 
     void storeSyncActivity(QTextStream &ts);
 
-    // Shared with IssueWidget
-    static QTreeWidgetItem *createCompletedTreewidgetItem(const QString &folder, const SyncFileItem &item);
-    static QString timeString(QDateTime dt, QLocale::FormatType format = QLocale::NarrowFormat);
-
 public slots:
     void slotItemCompleted(const QString &folder, const SyncFileItemPtr &item);
     void slotOpenFile(QTreeWidgetItem *item, int);
@@ -59,6 +79,9 @@ public slots:
 protected:
     void showEvent(QShowEvent *);
     void hideEvent(QHideEvent *);
+
+private slots:
+    void slotItemContextMenu(const QPoint &pos);
 
 signals:
     void copyToClipboard();

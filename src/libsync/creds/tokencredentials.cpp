@@ -21,7 +21,7 @@
 
 #include "account.h"
 #include "accessmanager.h"
-#include "utility.h"
+#include "common/utility.h"
 #include "theme.h"
 #include "creds/credentialscommon.h"
 #include "creds/tokencredentials.h"
@@ -102,7 +102,7 @@ QString TokenCredentials::password() const
     return _password;
 }
 
-QNetworkAccessManager *TokenCredentials::getQNAM() const
+QNetworkAccessManager *TokenCredentials::createQNAM() const
 {
     AccessManager *qnam = new TokenCredentialsAccessManager(this);
 

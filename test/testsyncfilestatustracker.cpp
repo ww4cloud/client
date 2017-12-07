@@ -260,6 +260,24 @@ private slots:
         QCOMPARE(fakeFolder.currentLocalState(), fakeFolder.currentRemoteState());
     }
 
+    void warningStatusForExcludedFile_CasePreserving() {
+        FakeFolder fakeFolder{FileInfo::A12_B12_C12_S12()};
+        fakeFolder.syncEngine().excludedFiles().addExcludeExpr("B");
+        fakeFolder.serverErrorPaths().append("A/a1");
+        fakeFolder.localModifier().appendByte("A/a1");
+
+        fakeFolder.syncOnce();
+        QCOMPARE(fakeFolder.syncEngine().syncFileStatusTracker().fileStatus(""), SyncFileStatus(SyncFileStatus::StatusWarning));
+        QCOMPARE(fakeFolder.syncEngine().syncFileStatusTracker().fileStatus("A"), SyncFileStatus(SyncFileStatus::StatusWarning));
+        QCOMPARE(fakeFolder.syncEngine().syncFileStatusTracker().fileStatus("A/a1"), SyncFileStatus(SyncFileStatus::StatusError));
+        QCOMPARE(fakeFolder.syncEngine().syncFileStatusTracker().fileStatus("B"), SyncFileStatus(SyncFileStatus::StatusWarning));
+
+        // Should still get the status for different casing on macOS and Windows.
+        QCOMPARE(fakeFolder.syncEngine().syncFileStatusTracker().fileStatus("a"), SyncFileStatus(Utility::fsCasePreserving() ? SyncFileStatus::StatusWarning : SyncFileStatus::StatusNone));
+        QCOMPARE(fakeFolder.syncEngine().syncFileStatusTracker().fileStatus("A/A1"), SyncFileStatus(Utility::fsCasePreserving() ? SyncFileStatus::StatusError : SyncFileStatus::StatusNone));
+        QCOMPARE(fakeFolder.syncEngine().syncFileStatusTracker().fileStatus("b"), SyncFileStatus(Utility::fsCasePreserving() ? SyncFileStatus::StatusWarning : SyncFileStatus::StatusNone));
+    }
+
     void parentsGetWarningStatusForError() {
         FakeFolder fakeFolder{FileInfo::A12_B12_C12_S12()};
         fakeFolder.serverErrorPaths().append("A/a1");
@@ -418,6 +436,8 @@ private slots:
         fakeFolder.remoteModifier().appendByte("S/s1");
         fakeFolder.remoteModifier().insert("B/b3");
         fakeFolder.remoteModifier().find("B/b3")->extraDavProperties = "<oc:share-types><oc:share-type>0</oc:share-type></oc:share-types>";
+        fakeFolder.remoteModifier().find("A/a1")->isShared = true; // becomes shared
+        fakeFolder.remoteModifier().find("A", true); // change the etags of the parent
 
         StatusPushSpy statusSpy(fakeFolder.syncEngine());
 
@@ -440,6 +460,7 @@ private slots:
         QCOMPARE(statusSpy.statusOf("S/s1"), sharedUpToDateStatus);
         QCOMPARE(statusSpy.statusOf("B/b1").shared(), false);
         QCOMPARE(statusSpy.statusOf("B/b3"), sharedUpToDateStatus);
+        QCOMPARE(statusSpy.statusOf("A/a1"), sharedUpToDateStatus);
 
         QCOMPARE(fakeFolder.currentLocalState(), fakeFolder.currentRemoteState());
     }
